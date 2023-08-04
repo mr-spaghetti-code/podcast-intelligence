@@ -26,6 +26,10 @@ os.environ['ANTHROPIC_API_KEY'] = st.secrets.anthropic_api_key
 headers = {"apiKey": st.secrets.supabase_key, "Authorization": f"Bearer {st.secrets.supabase_key}"}
 storage_client = create_client(st.secrets.supabase_url, headers, is_async=False)
 
+if "podcast_selected" not in st.session_state:
+    st.session_state["podcast_selected"] = ''
+
+
 def get_available_episodes(podcast_title):
     bucket = storage_client.from_('transcripts')
     response = bucket.list(f'{podcast_title}/output/processed')
@@ -48,22 +52,26 @@ def get_docs(podcast_title, episode_title):
     os.remove(f'{episode_title}.json')
     return docs
 
-available_episodes = get_available_episodes('delphi_podcast')
+if st.session_state["podcast_selected"]:
+    available_episodes = get_available_episodes(st.session_state["podcast_selected"])
 
-episode_selected = st.selectbox(
-    label="Pick a podcast episode",
-    options=available_episodes
-)
+    episode_selected = st.selectbox(
+        label="Pick a podcast episode",
+        options=available_episodes
+    )
 
-query = st.text_input(
-    label="Ask a question."
-)
+    query = st.text_input(
+        label="Ask a question."
+    )
+else:
+    st.warning("Please select a podcast from the 'Home' page.")
+
 
 
 if st.button("Submit"):
     docs = []
     with st.spinner("Retrieving docs..."):
-        docs = get_docs("delphi_podcast", episode_selected)
+        docs = get_docs(st.session_state["podcast_selected"], episode_selected)
     if docs:
         with st.spinner("Thinking"):
             chat = ChatAnthropic(

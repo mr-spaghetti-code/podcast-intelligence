@@ -18,7 +18,7 @@ st.sidebar.header("Podcast Summarization Demo")
 
 st.write(
     """This demo illustrates how we can use an LLM to summarize a podcast.
-    Pick an episode of the Delphi Podcast and hit 'Submit'."""
+    Pick an episode of the Delphi Podcast and hit 'Submit'. If an episode hasn't been summarize it might take a little bit."""
 )
 
 headers = {"apiKey": st.secrets.supabase_key, "Authorization": f"Bearer {st.secrets.supabase_key}"}
@@ -37,22 +37,20 @@ map_prompt_template = PromptTemplate(template=map_prompt, input_variables=["text
 combine_prompt = """
 You are a technical writing expert who writes highly engaging, informative, and creative blog posts. 
 Write a long-form blog post about the topic below using the content enclosed in <content></content>
-It contains information extracted from a podcast. Be detailed and thorough. Do not write anything before your response.
-Use markdown to format the article.
+It contains information extracted from a podcast. Be detailed and thorough. 
+
 
 <content>
 {text}
 </content>
 
+Do not write anything before your response. Use markdown to format the article.
 Article:
 """
 combine_prompt_template = PromptTemplate(template=combine_prompt, input_variables=["text"])
 
-def get_available_titles():
-    bucket = storage_client.from_('transcripts')
-    response = bucket.list()
-    podcast_list = [dir["name"] for dir in response]
-    return podcast_list
+if "podcast_selected" not in st.session_state:
+    st.session_state["podcast_selected"] = ''
 
 def get_available_episodes(podcast_title):
     bucket = storage_client.from_('transcripts')
@@ -75,6 +73,16 @@ def get_docs(podcast_title, episode_title):
     docs = loader.load()
     os.remove(f'{episode_title}.json')
     return docs
+
+def summary_exists(podcast_title, episode_title):
+    bucket = storage_client.from_('transcripts')
+    response = bucket.list(f'{podcast_title}/output/summaries')
+    episodes_available = [dir["name"].split(".")[0] for dir in response]
+    exists = False
+    if(episode_title in episodes_available):
+        print("Episode exists!")
+        exists = True
+    return exists
 
 def combine_chunks(docs, combine_chunks_n):
     combined_docs = []
@@ -108,13 +116,34 @@ def generate_summary(chat, docs, combine_chunks_n=None):
     
     return output
 
+def get_summary(podcast_title, episode_title):
+    bucket = storage_client.from_('transcripts')
+    name = f'{podcast_title}/output/summaries/{episode_title}.md'
+    text = bucket.download(name)
+    return text
 
-available_episodes = get_available_episodes('delphi_podcast')
+def save_summary(podcast_title, episode_title, data):
+    print(f"Saving data to Supabase:\n-------\n{data}")
+    bucket = storage_client.from_('transcripts')
+    name = f'{podcast_title}/output/summaries/{episode_title}.md'
+    with open(f"{episode_title}.md", 'wt') as file:
+        file.write(data)
+    bucket.upload(
+        name,
+        os.path.abspath(f"{episode_title}.md")
+    )
+    os.remove(f"{episode_title}.md")
 
-episode_selected = st.selectbox(
-    label="Pick a podcast episode",
-    options=available_episodes
-)
+if st.session_state["podcast_selected"]:
+    available_episodes = get_available_episodes(st.session_state["podcast_selected"])
+
+    episode_selected = st.selectbox(
+        label="Pick a podcast episode",
+        options=available_episodes
+    )
+else:
+    st.warning("Please select a podcast from the 'Home' page.")
+
 
 
 chat = ChatAnthropic(
@@ -124,14 +153,30 @@ chat = ChatAnthropic(
     )
 
 if st.button("Summarize"):
-    docs = []
-    with st.spinner("Retrieving docs..."):
-        docs = get_docs("delphi_podcast", episode_selected)
-    if docs:
-        with st.spinner("Generating summary. This might take a while."):
-            results = generate_summary(chat, docs, 8)
-            st.write("---\n### Key notes and takeaways:")
-            st.write(results['output_text'])
-            for step in results['intermediate_steps']:
-                step = step.replace("Here is a concise summary of the key points from the text:", "")
-                st.write(f"{step}---\n")
+    if st.session_state["podcast_selected"]:
+        podcast_title = st.session_state["podcast_selected"]
+        docs = []
+        if summary_exists(podcast_title, episode_selected):
+            with st.spinner("✍️ Summary already exists. Retrieving..."):
+                text = get_summary(podcast_title, episode_selected)
+                st.markdown(text.decode('utf-8'))
+        else:
+            with st.spinner("Retrieving docs..."):
+                docs = get_docs(podcast_title, episode_selected)
+            if docs:
+                output_txt = ""
+                with st.spinner("✍️ Generating summary. This might take a while."):
+                    results = generate_summary(chat, docs, 8)
+                    st.write("---\n### Key notes and takeaways:")
+                    st.write(results['output_text'])
+                    output_txt += results['output_text']
+                    output_txt += "\nConcise notes:\n"
+                    st.write("Concise notes:")
+                    for step in results['intermediate_steps']:
+                        step = step.replace("Here is a concise summary of the key points from the text:", "")
+                        st.write(f"{step}\n")
+                        output_txt += f"{step}\n"
+                with st.spinner("☁️ Uploading to the cloud..."):
+                    save_summary(podcast_title, episode_selected, output_txt)
+    else:
+        st.warning("Please select a podcast from the 'Home' page.")
